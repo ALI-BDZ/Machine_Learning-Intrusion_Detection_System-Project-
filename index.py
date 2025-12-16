@@ -3,6 +3,21 @@ import pandas as pd
 import os
 
 
+from sklearn.model_selection import train_test_split
+# to encode categories
+from sklearn.preprocessing import OneHotEncoder
+#encode  the labels in my case the class (A/N)
+from sklearn.preprocessing import LabelEncoder
+
+
+#For the model of Decission Tree
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.tree import export_text
+from sklearn.metrics import classification_report
+
+
+
 #my dictionary fo columns i hope that my fucked up logique will work
 column_mapping = { 
     # IPs
@@ -187,16 +202,125 @@ def UnifyData(final_csv_dataframe,final_text_dataframe):
 # def open_log_files(log_files):
 #     pass
 
+#clearning the data from my final csv file  and  extract the columns and place the values in there correct values
+def preProcessing(final_file, dictionary_of_final_features):
+    chunk_size = 500
+    processed_chunks = []
 
+    reverse_map = {}
+    for canonical_name, variants in dictionary_of_final_features.items():
+        for v in variants:
+            reverse_map[v.strip().lower()] = canonical_name
 
-#function ==> entrainment data set ==> important features ===> [features] 
-def extract_final_features_fromDatasets():
-    return final_features
+    try:
+        for chunk in pd.read_csv(final_file, chunksize=chunk_size):
+
+            chunk.columns = [col.strip().lower() for col in chunk.columns]
+
+            rename_dict = {}
+            for col in chunk.columns:
+                if col in reverse_map:
+                    rename_dict[col] = reverse_map[col]
+
+            chunk = chunk.rename(columns=rename_dict)
+
+            expected_features = list(dictionary_of_final_features.keys())
+            chunk = chunk[[c for c in chunk.columns if c in expected_features]]
+
+            processed_chunks.append(chunk)
+
+        if not processed_chunks:
+            print("No valid data found after preprocessing.")
+            return None
+
+        final_df = pd.concat(processed_chunks, ignore_index=True)
+
+       
+        for col in expected_features:
+            if col not in final_df.columns:
+                final_df[col] = np.nan
+
+       
+        final_df.to_csv("./Results/final_preprocessed.csv", index=False)
+        print("Renaming and handling columns with  correct values completed successfully.")
+
+        return final_df
+
+    except Exception as e:
+        print(f"Error during preprocessing of {final_file}: {e}")
+        return None
     
 
 
-def preProcessing():
-    pass
+
+
+# this part i didnt code it i get it from gpt becuase when i did it solo i needed 25 terabite of ram so my shit can work fuck that
+def encode_and_prepare_for_ml(preprocessed_csv):
+    df = pd.read_csv(preprocessed_csv)
+
+    if 'label' not in df.columns:
+        raise ValueError("Label column not found")
+
+    label_encoder = LabelEncoder()
+    df['label'] = label_encoder.fit_transform(df['label'].astype(str))
+    print("\nLabel Encoding:")
+    for cls, idx in zip(label_encoder.classes_, range(len(label_encoder.classes_))):
+        print(f"{cls} -> {idx}")
+
+    high_card_cols = ['src_ip', 'dst_ip', 'flow_id', 'timestamp']
+    for col in high_card_cols:
+        if col in df.columns:
+            le = LabelEncoder()
+            df[col] = le.fit_transform(df[col].astype(str))
+            print(f"Label-encoded column: {col}")
+
+    low_card_cols = ['protocol']
+    for col in low_card_cols:
+        if col in df.columns:
+            ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+            encoded = ohe.fit_transform(df[[col]].astype(str))
+            df_encoded = pd.DataFrame(encoded, columns=ohe.get_feature_names_out([col]))
+            df = pd.concat([df.drop(columns=[col]), df_encoded], axis=1)
+            print(f"One-Hot encoded column: {col}")
+
+    df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    X = df.drop(columns=['label'])
+    y = df['label']
+
+    return X, y
+
+
+
+def decision_tree_pattern_generator(X, y):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=0.2,
+        stratify=y,
+        random_state=42
+    )
+
+    tree = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=10,
+        class_weight='balanced',
+        random_state=42,
+        n_jobs=-1
+    )
+
+    tree.fit(X_train, y_train)
+    rules = export_text(tree, feature_names=list(X.columns))
+    print("\nDecision Tree Evaluation:\n")
+    print(classification_report(y_test, tree.predict(X_test)))
+
+
+
+    print("\n--- GENERATED PATTERNS ---\n")
+    print(rules)
+
+    return tree
+
+    
 
 
 def main():
@@ -204,6 +328,7 @@ def main():
     csv_array_files, text_array_files, log_array_files = sort_files(files)
 
      #opening and handling csv files (just for testing)
+     
     csv_file_map = open_csv_files(csv_array_files)
     if csv_file_map:
         full_df = unify_chunks_in_one_dataframe_csv(csv_file_map)
@@ -229,6 +354,23 @@ def main():
         final_dataframe = UnifyData(final_csv_dataframe,final_text_dataframe)
         print(final_dataframe.columns)
         print(final_dataframe)
+        
+        #preProccessing part
+        final_preprocessed = preProcessing(
+            "./Results/final_results.csv",
+            column_mapping
+        )
+
+        #Ml part (Decission tree)
+        if final_preprocessed is not None:
+            print("Preprocessing completed.")
+            X, y = encode_and_prepare_for_ml("./Results/final_preprocessed.csv")
+
+            tree = decision_tree_pattern_generator(X, y)
+
+        
+        
+        
     else:
         print("No CSV or text files loaded successfully.")
 
