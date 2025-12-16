@@ -20,7 +20,12 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import export_text
 from sklearn.metrics import classification_report
 from xgboost import XGBClassifier
+from dotenv import load_dotenv
 
+
+
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
 
 
 #my dictionary fo columns i hope that my fucked up logique will work
@@ -259,99 +264,46 @@ def preProcessing(final_file, dictionary_of_final_features):
     
 
 # this part i didnt code it i get it from gpt becuase when i did it solo i needed 25 terabite of ram so my shit can work fuck that
-# def encode_and_prepare_for_ml(df):
-#     if 'label' not in df.columns:
-#         raise ValueError("Label column not found")
-
-#     df = df[df['label'].notna()].copy()
-
-#     label_encoder = LabelEncoder()
-#     df['label'] = label_encoder.fit_transform(df['label'].astype(str))
-
-#     print("\nLabel Encoding:")
-#     for cls, idx in zip(label_encoder.classes_, range(len(label_encoder.classes_))):
-#         print(f"{cls} -> {idx}")
-
-  
-#     identifiers = ['src_ip', 'dst_ip', 'flow_id', 'timestamp']
-#     df = df.drop(columns=[c for c in identifiers if c in df.columns])
-
-#     if 'protocol' in df.columns:
-#         df['protocol'] = df['protocol'].astype(str)
-#         df['protocol'] = LabelEncoder().fit_transform(df['protocol'])
-
-
-#     feature_cols = df.drop(columns=['label']).columns
-
-#     for col in feature_cols:
-#         df[col] = pd.to_numeric(df[col], errors='coerce')
-
-
-#     df = df.replace([np.inf, -np.inf], np.nan)
-
-#     # Median is safer than zero for IDS
-#     df[feature_cols] = df[feature_cols].fillna(df[feature_cols].median())
-
-#     X = df.drop(columns=['label'])
-#     y = df['label']
-
-#     print(f"\nFinal dataset shape: X={X.shape}, y={y.shape}")
-
-#     return X, y
-
 def encode_and_prepare_for_ml(df):
     if 'label' not in df.columns:
         raise ValueError("Label column not found")
 
-    # Remove rows with missing labels
     df = df[df['label'].notna()].copy()
 
-    # Ensure label is integer
-    df['label'] = df['label'].astype(int)
+    label_encoder = LabelEncoder()
+    df['label'] = label_encoder.fit_transform(df['label'].astype(str))
 
-    # Convert multi-class to binary
-    # 0 = BENIGN, 1 = ATTACK
-    for i in range(len(df)):
-        if df.at[i, 'label'] == 0:
-            df.at[i, 'label'] = 0
-        else:
-            df.at[i, 'label'] = 1
+    print("\nLabel Encoding:")
+    for cls, idx in zip(label_encoder.classes_, range(len(label_encoder.classes_))):
+        print(f"{cls} -> {idx}")
 
-    print("\nBinary Labels:")
-    print("0 -> BENIGN")
-    print("1 -> ATTACK")
-
-    # Drop identifiers
+  
     identifiers = ['src_ip', 'dst_ip', 'flow_id', 'timestamp']
-    for col in identifiers:
-        if col in df.columns:
-            df.drop(columns=col, inplace=True)
+    df = df.drop(columns=[c for c in identifiers if c in df.columns])
 
-    # Encode protocol if exists
     if 'protocol' in df.columns:
         df['protocol'] = df['protocol'].astype(str)
-        le = LabelEncoder()
-        df['protocol'] = le.fit_transform(df['protocol'])
+        df['protocol'] = LabelEncoder().fit_transform(df['protocol'])
 
-    # Convert features to numeric
+
     feature_cols = df.drop(columns=['label']).columns
+
     for col in feature_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # Handle inf and NaN
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    for col in feature_cols:
-        df[col].fillna(df[col].median(), inplace=True)
 
-    # Split
+    df = df.replace([np.inf, -np.inf], np.nan)
+
+    # Median is safer than zero for IDS
+    df[feature_cols] = df[feature_cols].fillna(df[feature_cols].median())
+
     X = df.drop(columns=['label'])
     y = df['label']
 
     print(f"\nFinal dataset shape: X={X.shape}, y={y.shape}")
-    print("\nLabel distribution:")
-    print(y.value_counts())
 
     return X, y
+
 
 
 
@@ -442,7 +394,7 @@ def xgboost_pattern_generator(X, y):
     print("\n=== XGBoost Evaluation ===\n")
     print(classification_report(y_test, model.predict(X_test)))
 
-    # Dump boosted tree rules
+    
     booster = model.get_booster()
     rules = booster.get_dump(with_stats=True)
 
@@ -538,49 +490,49 @@ def generate_ids_rules_local_api(pattern):
 
 def main():
 
-    files = get_all_files('./Data')
-    csv_array_files, text_array_files, log_array_files = sort_files(files)
+    # files = get_all_files('./Data')
+    # csv_array_files, text_array_files, log_array_files = sort_files(files)
 
-    if not csv_array_files:
-        print("No CSV files found.")
-        return
+    # if not csv_array_files:
+    #     print("No CSV files found.")
+    #     return
 
-    csv_file_map = open_csv_files(csv_array_files)
+    # csv_file_map = open_csv_files(csv_array_files)
 
-    if not csv_file_map:
-        print("Failed to load CSV files.")
-        return
-
-
-    final_csv_dataframe = unify_chunks_in_one_dataframe_csv(csv_file_map)
+    # if not csv_file_map:
+    #     print("Failed to load CSV files.")
+    #     return
 
 
-    if text_array_files:
-        attributes, text_lines = open_text_files(text_array_files)
-        final_text_dataframe = create_csv_from_attributes_text(
-            attributes,
-            text_lines,
-            "./Results/results_text.csv"
-        )
-
-        final_dataframe = UnifyData(final_csv_dataframe, final_text_dataframe)
-    else:
-        final_dataframe = final_csv_dataframe
-        final_dataframe.to_csv("./Results/final_results.csv", index=False)
-
-    print("Final dataset created.")
+    # final_csv_dataframe = unify_chunks_in_one_dataframe_csv(csv_file_map)
 
 
-    final_preprocessed = preProcessing(
-        "./Results/final_results.csv",
-        column_mapping
-    )
+    # if text_array_files:
+    #     attributes, text_lines = open_text_files(text_array_files)
+    #     final_text_dataframe = create_csv_from_attributes_text(
+    #         attributes,
+    #         text_lines,
+    #         "./Results/results_text.csv"
+    #     )
 
-    if final_preprocessed is None:
-        print("Preprocessing failed.")
-        return
+    #     final_dataframe = UnifyData(final_csv_dataframe, final_text_dataframe)
+    # else:
+    #     final_dataframe = final_csv_dataframe
+    #     final_dataframe.to_csv("./Results/final_results.csv", index=False)
 
-    print("Preprocessing completed.")
+    # print("Final dataset created.")
+
+
+    # final_preprocessed = preProcessing(
+    #     "./Results/final_results.csv",
+    #     column_mapping
+    # )
+
+    # if final_preprocessed is None:
+    #     print("Preprocessing failed.")
+    #     return
+
+    # print("Preprocessing completed.")
 
 
     final_df = pd.read_csv("./Results/final_preprocessed.csv")
@@ -591,16 +543,16 @@ def main():
     dt_model, dt_rules = decision_tree_pattern_generator(X, y)
 
     # Random Forest 
-    rf_model = random_forest_pattern_generator(X, y, tree_index=0)
+    # rf_model = random_forest_pattern_generator(X, y, tree_index=0)
 
     #XGBoost
-    xgb_model = xgboost_pattern_generator(X, y)
+    # xgb_model = xgboost_pattern_generator(X, y)
     
+
     
-    api_key = "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"
     rules=generate_ids_rules(api_key=api_key, patterns=dt_rules)
     save_ids_rules(rules)
-    # generate_ids_rules_local_api(patterns=dt_rules)
+    generate_ids_rules_local_api(patterns=dt_rules,api_key=api_key)
     print("\n=== PIPELINE FINISHED SUCCESSFULLY ===")
        
 
