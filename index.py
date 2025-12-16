@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 import os
 
+#ai calls
+from openai import OpenAI
+# from gpt4all import GPT4All
+
 
 from sklearn.model_selection import train_test_split
 # to encode categories
@@ -15,6 +19,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.tree import export_text
 from sklearn.metrics import classification_report
+from xgboost import XGBClassifier
 
 
 
@@ -165,6 +170,8 @@ def open_text_files(text_files):
                        
    return attributes,lines_whitout_attribute
 
+
+
 #handle csv files chuks from my map 
 def unify_chunks_in_one_dataframe_csv(csv_file_map):            
     all_chunks=[]  #store all chunks of all files 
@@ -251,42 +258,44 @@ def preProcessing(final_file, dictionary_of_final_features):
         return None
     
 
-
-
-
 # this part i didnt code it i get it from gpt becuase when i did it solo i needed 25 terabite of ram so my shit can work fuck that
-def encode_and_prepare_for_ml(preprocessed_csv):
-    df = pd.read_csv(preprocessed_csv)
-
+def encode_and_prepare_for_ml(df):
     if 'label' not in df.columns:
         raise ValueError("Label column not found")
 
+    df = df[df['label'].notna()].copy()
+
     label_encoder = LabelEncoder()
     df['label'] = label_encoder.fit_transform(df['label'].astype(str))
+
     print("\nLabel Encoding:")
     for cls, idx in zip(label_encoder.classes_, range(len(label_encoder.classes_))):
         print(f"{cls} -> {idx}")
 
-    high_card_cols = ['src_ip', 'dst_ip', 'flow_id', 'timestamp']
-    for col in high_card_cols:
-        if col in df.columns:
-            le = LabelEncoder()
-            df[col] = le.fit_transform(df[col].astype(str))
-            print(f"Label-encoded column: {col}")
+  
+    identifiers = ['src_ip', 'dst_ip', 'flow_id', 'timestamp']
+    df = df.drop(columns=[c for c in identifiers if c in df.columns])
 
-    low_card_cols = ['protocol']
-    for col in low_card_cols:
-        if col in df.columns:
-            ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
-            encoded = ohe.fit_transform(df[[col]].astype(str))
-            df_encoded = pd.DataFrame(encoded, columns=ohe.get_feature_names_out([col]))
-            df = pd.concat([df.drop(columns=[col]), df_encoded], axis=1)
-            print(f"One-Hot encoded column: {col}")
+    if 'protocol' in df.columns:
+        df['protocol'] = df['protocol'].astype(str)
+        df['protocol'] = LabelEncoder().fit_transform(df['protocol'])
 
-    df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    feature_cols = df.drop(columns=['label']).columns
+
+    for col in feature_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+
+    df = df.replace([np.inf, -np.inf], np.nan)
+
+    # Median is safer than zero for IDS
+    df[feature_cols] = df[feature_cols].fillna(df[feature_cols].median())
 
     X = df.drop(columns=['label'])
     y = df['label']
+
+    print(f"\nFinal dataset shape: X={X.shape}, y={y.shape}")
 
     return X, y
 
@@ -300,7 +309,34 @@ def decision_tree_pattern_generator(X, y):
         random_state=42
     )
 
-    tree = RandomForestClassifier(
+    tree = DecisionTreeClassifier(
+        max_depth=10,
+        class_weight='balanced',
+        random_state=42
+    )
+
+    tree.fit(X_train, y_train)
+
+    print("\n=== Decision Tree Evaluation ===\n")
+    print(classification_report(y_test, tree.predict(X_test)))
+
+    rules = export_text(tree, feature_names=list(X.columns))
+
+    print("\n--- DECISION TREE PATTERNS ---\n")
+    # print(rules)
+
+    return tree,rules
+
+
+def random_forest_pattern_generator(X, y, tree_index=0):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=0.2,
+        stratify=y,
+        random_state=42
+    )
+
+    forest = RandomForestClassifier(
         n_estimators=100,
         max_depth=10,
         class_weight='balanced',
@@ -308,75 +344,214 @@ def decision_tree_pattern_generator(X, y):
         n_jobs=-1
     )
 
-    tree.fit(X_train, y_train)
-    rules = export_text(tree, feature_names=list(X.columns))
-    print("\nDecision Tree Evaluation:\n")
-    print(classification_report(y_test, tree.predict(X_test)))
+    forest.fit(X_train, y_train)
+
+    print("\n=== Random Forest Evaluation ===\n")
+    print(classification_report(y_test, forest.predict(X_test)))
+
+    # Extract ONE tree for interpretation
+    estimator = forest.estimators_[tree_index]
+
+    rules = export_text(estimator, feature_names=list(X.columns))
+
+    print(f"\n--- RANDOM FOREST PATTERNS (Tree {tree_index}) ---\n")
+    # print(rules)
+
+
+    return forest
 
 
 
-    print("\n--- GENERATED PATTERNS ---\n")
-    print(rules)
+def xgboost_pattern_generator(X, y):
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=0.2,
+        stratify=y,
+        random_state=42
+    )
 
-    return tree
+    model = XGBClassifier(
+        n_estimators=200,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective='binary:logistic',
+        eval_metric='logloss',
+        random_state=42,
+        n_jobs=-1
+    )
 
+    model.fit(X_train, y_train)
+
+    print("\n=== XGBoost Evaluation ===\n")
+    print(classification_report(y_test, model.predict(X_test)))
+
+    # Dump boosted tree rules
+    booster = model.get_booster()
+    rules = booster.get_dump(with_stats=True)
+
+    print("\n--- XGBOOST PATTERNS (First 3 Trees) ---\n")
+    for i, tree in enumerate(rules[:3]):
+        print(f"\nTree {i}:\n")
+        print(tree)
+
+    return model
+
+
+
+def generate_ids_rules(patterns, api_key):
+
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
     
+    # Craft a detailed prompt to convert patterns to IDS rules
+    prompt = f"""
+    Convert the following machine learning patterns into IDS rules in Snort/Suricata format.
+    Each rule should follow the proper syntax and include appropriate actions, protocols, 
+    source/destination IP addresses, ports, and options based on the patterns provided.
+    
+    Patterns:
+    {patterns}
+    
+    Please generate comprehensive IDS rules that would detect these patterns in network traffic.
+    Each rule should include:
+    1. Action (alert, drop, etc.)
+    2. Protocol
+    3. Source IP and port
+    4. Destination IP and port
+    5. Options (msg, content, classtype, priority, etc.)
+    
+    Format each rule according to Snort/Suricata standards.
+    """
+    
+    try:
+        completion = client.chat.completions.create(
+            extra_headers={
+                "HTTP-Referer": "IDS Rule Generator",  
+                "X-Title": "IDS Rule Generator",      
+            },
+            model="mistralai/devstral-2512:free",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert in cybersecurity and intrusion detection systems. Your task is to convert machine learning patterns into effective IDS rules following Snort/Suricata syntax."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+        
+        # Extract and return the generated rules
+        return completion.choices[0].message.content
+        
+    except Exception as e:
+        print(f"Error generating IDS rules: {e}")
+        return None
+
+
+def save_ids_rules(rules, filename="./Results/generated_ids_rules.txt"):
+    """
+    Save the generated IDS rules to a file.
+    
+    Args:
+        rules (str): The generated IDS rules
+        filename (str): The file path to save the rules
+    """
+    if rules:
+        try:
+            with open(filename, 'w') as f:
+                f.write(rules)
+            print(f"IDS rules saved to {filename}")
+        except Exception as e:
+            print(f"Error saving IDS rules: {e}")
+    else:
+        print("No rules to save.")
+    
+
+def generate_ids_rules_local_api(pattern):
+    model = GPT4All("gpt4all‑lora‑quantized‑ggml")
+    prompt = f"Analyze the following decision tree pattern and extract meaningful IDS rules:\n\n{pattern}\n\nProvide the rules in a clear format and generate a file in Snort format for these rules."
+    out = model.generate(prompt)
+    print(out)
+    return out
 
 
 def main():
+
     files = get_all_files('./Data')
     csv_array_files, text_array_files, log_array_files = sort_files(files)
 
-     #opening and handling csv files (just for testing)
-     
+    if not csv_array_files:
+        print("No CSV files found.")
+        return
+
     csv_file_map = open_csv_files(csv_array_files)
-    if csv_file_map:
-        full_df = unify_chunks_in_one_dataframe_csv(csv_file_map)
-        print(full_df.columns)
-        print(full_df)
-    else:
-        print("No CSV files loaded successfully.")
-        
-     #opening and handling text files (just for testing)
+
+    if not csv_file_map:
+        print("Failed to load CSV files.")
+        return
+
+
+    final_csv_dataframe = unify_chunks_in_one_dataframe_csv(csv_file_map)
+
+
     if text_array_files:
-        attributes,text_lines_whitout_attribute =open_text_files(text_array_files)
-        print(f'They are {len(attributes)} attributes')
-        print(f'They are {len(text_lines_whitout_attribute)} rows')
-        create_csv_from_attributes_text(attributes,text_lines_whitout_attribute,"./Results/results_text.csv")
-    else:
-        print("No text files loaded successfully.")
-    
-    
-    #merging to All files into One
-    if csv_file_map and text_array_files:
-        final_csv_dataframe = pd.read_csv("./Results/csv_result.csv")
-        final_text_dataframe = pd.read_csv("./Results/results_text.csv")
-        final_dataframe = UnifyData(final_csv_dataframe,final_text_dataframe)
-        print(final_dataframe.columns)
-        print(final_dataframe)
-        
-        #preProccessing part
-        final_preprocessed = preProcessing(
-            "./Results/final_results.csv",
-            column_mapping
+        attributes, text_lines = open_text_files(text_array_files)
+        final_text_dataframe = create_csv_from_attributes_text(
+            attributes,
+            text_lines,
+            "./Results/results_text.csv"
         )
 
-        #Ml part (Decission tree)
-        if final_preprocessed is not None:
-            print("Preprocessing completed.")
-            X, y = encode_and_prepare_for_ml("./Results/final_preprocessed.csv")
-
-            tree = decision_tree_pattern_generator(X, y)
-
-        
-        
-        
+        final_dataframe = UnifyData(final_csv_dataframe, final_text_dataframe)
     else:
-        print("No CSV or text files loaded successfully.")
+        final_dataframe = final_csv_dataframe
+        final_dataframe.to_csv("./Results/final_results.csv", index=False)
 
-    #mapping and handling the final data set (USE REVERCE MAP  YA ALI NI PRESQUE RIGLT KOLCH)
+    print("Final dataset created.")
+
+
+    final_preprocessed = preProcessing(
+        "./Results/final_results.csv",
+        column_mapping
+    )
+
+    if final_preprocessed is None:
+        print("Preprocessing failed.")
+        return
+
+    print("Preprocessing completed.")
+
+
+    final_df = pd.read_csv("./Results/final_preprocessed.csv")
+    X, y = encode_and_prepare_for_ml(final_df)
+
+
+    # Decision Tree (rules)
+    dt_model, dt_rules = decision_tree_pattern_generator(X, y)
+
+    # Random Forest 
+    rf_model = random_forest_pattern_generator(X, y, tree_index=0)
+
+    #XGBoost
+    xgb_model = xgboost_pattern_generator(X, y)
+    
+    
+    api_key = "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"
+    rules=generate_ids_rules(api_key=api_key, patterns=dt_rules)
+    save_ids_rules(rules)
+    # generate_ids_rules_local_api(patterns=dt_rules)
+    print("\n=== PIPELINE FINISHED SUCCESSFULLY ===")
+       
+
+
+if __name__ == "__main__":
+    main()
+
     
 
-#this shit from django that i never understoood but still doing it so nban 9atal
-if __name__ =="__main__":
-    main()
